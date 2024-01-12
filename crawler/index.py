@@ -1,0 +1,89 @@
+import fcntl
+import tqdm
+import json
+import glob
+import sys
+import os
+import re
+
+CODE = sys.argv[1]
+PATH = sys.argv[2]
+INDEX_DIR = os.path.join(PATH, 'index', CODE)
+COURSE_DIR = os.path.join(INDEX_DIR, 'courses')
+HIST_DIR = os.path.join(PATH, 'hist', CODE)
+
+os.makedirs(COURSE_DIR, exist_ok = True)
+
+if __name__ == '__main__':
+
+    ret = dict()
+
+    file_list = glob.glob(os.path.join(HIST_DIR, '*.json'))
+    file_list.sort()
+
+    start_time = 0
+    end_time = 0
+
+    with tqdm.tqdm(total = len(file_list)) as bar:
+        for file_name in file_list:
+            timestamp = int(os.path.split(file_name)[1].split('.')[0])
+            with open(file_name, 'r') as file:
+                fcntl.flock(file.fileno(), fcntl.LOCK_SH)
+                data = json.load(file)
+                if len(data) > 0:
+                    if start_time == 0:
+                        start_time = timestamp            
+                    end_time = timestamp
+                for course in data:
+                    course_data = data[course]
+                    if course not in ret:
+                        ret[course] = dict()
+                    sections = course_data['course_slots']
+                    for section in sections:
+                        sec_name = section['section']
+                        if sec_name not in ret[course]:
+                            ret[course][sec_name] = []
+                        if '()' in  sec_name:
+                            continue
+                        delta = {
+                            'timestamp' : timestamp,
+                            'avail' : int(section['avail']),
+                            'enroll' : int(section['enrol']),
+                            'quota' : int(re.match('\d+', section['quota'])[0]),
+                            'wait' : int(section['wait'])
+                        }
+                        ret[course][sec_name].append(delta)
+            bar.update(1)
+
+    with tqdm.tqdm(total = len(ret)) as bar:
+        for course in ret:
+            for section in ret[course]:
+                ref = ret[course][section]
+                length = len(ref)
+                inc = 0
+                for i in range(0, length):
+                    if i > 0:
+                        inc += max(0, ref[i]['enroll'] - ref[i - 1]['enroll'])
+                    ref[i]['inc'] = inc
+                for i in range(0, length):
+                    ref[i]['dec'] = inc - ref[i]['inc']
+            bar.update(1)
+    
+    with tqdm.tqdm(total = len(ret)) as bar:
+        for course in ret:
+            file_path = os.path.join(COURSE_DIR, course + '.json')
+            with open(file_path, 'w') as file:
+                fcntl.flock(file.fileno(), fcntl.LOCK_EX)
+                json.dump(ret[course], file)
+            bar.update(1)
+
+    sem_info = {
+        'semCode' : int(CODE),
+        'startTime' : start_time,
+        'endTime' : end_time,
+        'courses' : list(ret.keys())
+    }
+    file_path = os.path.join(INDEX_DIR, 'info.json')
+    with open(file_path, 'w') as file:
+        fcntl.flock(file.fileno(), fcntl.LOCK_EX)
+        json.dump(sem_info, file)
